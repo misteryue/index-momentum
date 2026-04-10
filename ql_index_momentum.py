@@ -210,10 +210,11 @@ def get_historical_prices(bs_code: str) -> list:
 
 
 def calc_momentum(hist: list, n: int = 20, realtime_close: float = None) -> float:
-    """计算N日动量（优先用实时价格）"""
-    if len(hist) < n + 1:
+    """计算N日动量（优先用实时价格）- 通达信算法"""
+    if len(hist) < n:
         return None
-    earlier = hist[-1 - n][1]
+    # 通达信用 hist[-n+1]，即从今天往前数 n-1 个交易日
+    earlier = hist[-(n - 1)][1]
     if earlier == 0:
         return None
     today_price = realtime_close if realtime_close is not None else hist[-1][1]
