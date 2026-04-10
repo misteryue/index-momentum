@@ -257,29 +257,51 @@ def send_bark(title: str, body: str):
 def main():
     print(f"📊 指数动量信号推送  [{datetime.now().strftime('%Y-%m-%d %H:%M')}]")
     print("=" * 52)
+    
+    # 调试：打印环境变量
+    print(f"[DEBUG] BARK_KEY 设置: {'是' if BARK_KEY else '否'}")
+    print(f"[DEBUG] TZ: {os.environ.get('TZ', '未设置')}")
 
     # 检查是否为本周最后一个交易日
     print("[0/3] 检查今日是否为本周最后交易日...")
-    if not is_last_trading_day():
+    try:
+        is_last = is_last_trading_day()
+    except Exception as e:
+        print(f"[ERROR] is_last_trading_day() 异常: {e}")
+        # 如果检查失败，假设是周五继续执行
+        is_last = True
+    if not is_last:
         print("⏭️ 今天不是本周最后交易日，跳过推送")
         sys.exit(0)
     print("✅ 确认为本周最后交易日，继续执行...")
 
     # Step 1: 获取实时价格
-    realtime = fetch_realtime()
+    try:
+        realtime = fetch_realtime()
+    except Exception as e:
+        print(f"[ERROR] fetch_realtime() 异常: {e}")
+        realtime = {}
     print(f"[1/3] 实时行情: {len(realtime)} 只成功")
 
     # Step 2: 获取历史数据 + 实时价格计算动量
     print(f"[2/3] 获取历史数据 + 实时价格计算{LOOKBACK}日动量...")
     results = []
     for sina_code, bs_code, name in INDICES:
-        hist = get_historical_prices(bs_code)
+        try:
+            hist = get_historical_prices(bs_code)
+        except Exception as e:
+            print(f"[ERROR] get_historical_prices({bs_code}) 异常: {e}")
+            hist = []
         
         rt = realtime.get(bs_code, {})
         realtime_close = rt.get("close", None)
         today_chg = rt.get("today_chg", None)
         
-        mom = calc_momentum(hist, LOOKBACK, realtime_close)
+        try:
+            mom = calc_momentum(hist, LOOKBACK, realtime_close)
+        except Exception as e:
+            print(f"[ERROR] calc_momentum 异常: {e}")
+            mom = None
 
         if mom is not None:
             emoji = emoji_for(mom)
@@ -317,4 +339,10 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        print(f"[FATAL] 脚本异常退出: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(2)
