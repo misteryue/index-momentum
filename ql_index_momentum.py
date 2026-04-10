@@ -6,20 +6,19 @@
 策略：每周五推送6个A股指数过去20个交易日涨幅排名，
      并标注当前应持仓的最强指数。
 
-数据源：东方财富/新浪实时行情（无需登录，HTTP 可达即用）
+数据源：东方财富（实时+K线同源，与TongDaXin一致）
 推送方式：Bark
 
 环境变量配置（在 GitHub Secrets 中设置）：
     BARK_KEY = 你的 Bark Device Key
 """
 
-import sys, os, json, re
+import sys, os, json
 from datetime import datetime, timedelta
 from urllib.request import Request, urlopen
-from urllib.error import URLError, HTTPError
 
 # ============================================================
-#  ⚙️ 配置 — 从环境变量读取
+#  ⚙️ 配置
 # ============================================================
 BARK_SERVER = os.environ.get("BARK_SERVER", "https://api.day.app")
 BARK_KEY    = os.environ.get("BARK_KEY", "")
@@ -27,198 +26,129 @@ BARK_KEY    = os.environ.get("BARK_KEY", "")
 
 # 六大指数
 INDICES = [
-    ("s_sh000300", "sh.000300", "沪深300"),
-    ("s_sz399006", "sz.399006", "创业板指"),
-    ("s_sh000016", "sh.000016", "上证50"),
-    ("s_sh000688", "sh.000688", "科创50"),
-    ("s_sz399330", "sz.399330", "深证100"),
-    ("s_sh000905", "sh.000905", "中证500"),
+    ("sh.000300", "沪深300"),
+    ("sz.399006", "创业板指"),
+    ("sh.000016", "上证50"),
+    ("sh.000688", "科创50"),
+    ("sz.399330", "深证100"),
+    ("sh.000905", "中证500"),
 ]
+
+# 东方财富代码映射
+EM_SECIDS = {
+    "sh.000300": "1.000300",
+    "sz.399006": "0.399006",
+    "sh.000016": "1.000016",
+    "sh.000688": "1.000688",
+    "sz.399330": "0.399330",
+    "sh.000905": "1.000905",
+}
 
 LOOKBACK = 20   # 计算N日动量
 
 
 def is_last_trading_day() -> bool:
-    """
-    检查今天是否为本周最后一个交易日。
-    原理：检查今天是否为交易日 + 未来几天是否还有交易日。
-    """
-    # GitHub Actions 使用 UTC，需要转换为北京时间
-    import os
+    """检查今天是否为本周最后一个交易日（仅周五推送）"""
     tz_env = os.environ.get("TZ", "")
     if "Asia/Shanghai" not in tz_env and "PRC" not in tz_env:
-        # 如果没有设置时区，假设需要 +8 小时
         today = datetime.now() + timedelta(hours=8)
     else:
         today = datetime.now()
-    weekday = today.weekday()  # 0=周一, 6=周日
+    weekday = today.weekday()
     print(f"[DEBUG] 当前北京时间: {today.strftime('%Y-%m-%d %H:%M')} 周{['一','二','三','四','五','六','日'][weekday]}")
-    
-    # 尝试获取-market数据判断是否为交易日
-    # 简单方法：检查今天是否有实时行情（市场开盘）
+
     try:
         url = "https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&invt=2&fields=f2,f12&secids=1.000001"
-        req = Request(url, headers={
-            "User-Agent": "Mozilla/5.0",
-            "Referer": "https://quote.eastmoney.com/",
-        })
+        req = Request(url, headers={"User-Agent": "Mozilla/5.0", "Referer": "https://quote.eastmoney.com/"})
         with urlopen(req, timeout=10) as resp:
             data = json.loads(resp.read().decode("utf-8"))
-        
         items = data.get("data", {}).get("diff", [])
-        if not items:
-            print("[INFO] 今天非交易日（无行情数据）")
-            return False
-        
-        # 检查今天数据是否有效（价格不为0或-）
-        price = float(items[0].get("f2", 0))
-        if price <= 0:
-            print("[INFO] 今天非交易日（行情无效）")
+        if not items or float(items[0].get("f2", 0)) <= 0:
+            print("[INFO] 今天非交易日（无行情）")
             return False
     except Exception as e:
-        print(f"[WARN] 检查交易日失败: {e}，默认假设为交易日")
-        # 如果API失败，工作日假设为交易日
-        if weekday >= 5:  # 周末
+        print(f"[WARN] 交易日检查失败: {e}，默认继续")
+        if weekday >= 5:
             return False
 
-    # 检查今天之后的几天内是否还有交易日（到周日为止）
-    # 简化：周五必然是最后交易日（除非节假日）
-    # 如果API返回了有效价格，说明市场开市
-    # 对于周中，需要判断后续是否有交易日
-    
-    # 简化逻辑：
-    # - 周五 → 最后交易日（节假日本身会通过行情验证排除）
-    # - 周一到周四 → 检查后续是否还有交易日
-    if weekday == 4:  # 周五
+    if weekday == 4:
         return True
-    
-    # 对于周一到周四，默认不是最后交易日
-    # 如果遇到节假日导致今天变成最后交易日，需要更复杂的日历判断
-    # 这里简化处理：仅周五推送
-    print(f"[INFO] 今天是周{['一','二','三','四','五','六','日'][weekday]}，不是周五，跳过")
+    print(f"[INFO] 今天是周{['一','二','三','四','五','六','日'][weekday]}，非周五，跳过")
     return False
 
 
 def fetch_realtime() -> dict:
-    """通过东方财富实时接口获取6个指数当前价格"""
-    em_codes = {
-        "sh.000300": "1.000300",
-        "sz.399006": "0.399006",
-        "sh.000016": "1.000016",
-        "sh.000688": "1.000688",
-        "sz.399330": "0.399330",
-        "sh.000905": "1.000905",
-    }
-    codes_str = ",".join(em_codes.values())
-    url = f"https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&invt=2&fields=f2,f3,f4,f12,f13,f18&secids={codes_str}"
+    """东方财富实时行情"""
+    codes_str = ",".join(EM_SECIDS.values())
+    url = f"https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&invt=2&fields=f2,f3,f12,f18&secids={codes_str}"
     result = {}
+    bs_map = {v.split(".")[1]: k for k, v in EM_SECIDS.items()}
     try:
-        req = Request(url, headers={
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Referer": "https://quote.eastmoney.com/",
-        })
+        req = Request(url, headers={"User-Agent": "Mozilla/5.0", "Referer": "https://quote.eastmoney.com/"})
         with urlopen(req, timeout=10) as resp:
             data = json.loads(resp.read().decode("utf-8"))
-        
         for item in data.get("data", {}).get("diff", []):
-            code_short = item.get("f12", "")
-            close = float(item.get("f2", 0))
-            prev_close = float(item.get("f18", 0))
-            today_chg = float(item.get("f3", 0))
-            
-            bs_code_map = {v.split(".")[1]: k for k, v in em_codes.items()}
-            bs_code = bs_code_map.get(code_short, "")
+            code = item.get("f12", "")
+            bs_code = bs_map.get(code, "")
             if bs_code:
                 result[bs_code] = {
-                    "close": close,
-                    "prev_close": prev_close,
-                    "today_chg": today_chg,
-                    "date": datetime.now().strftime("%Y-%m-%d"),
-                    "time": datetime.now().strftime("%H:%M"),
+                    "close":      float(item.get("f2", 0)),
+                    "prev_close": float(item.get("f18", 0)),
+                    "today_chg":  float(item.get("f3", 0)),
                 }
-        print(f"[INFO] 东方财富实时数据: {len(result)} 只成功")
+        print(f"[INFO] 实时行情: {len(result)} 只成功")
     except Exception as e:
-        print(f"[WARN] 东方财富接口失败: {e}，尝试备用接口...")
-        return fetch_realtime_v2()
+        print(f"[WARN] 东方财富实时接口失败: {e}")
     return result
 
 
-def fetch_realtime_v2() -> dict:
-    """备用：腾讯实时接口"""
-    codes = ["sh000300", "sz399006", "sh000016", "sh000688", "sz399330", "sh000905"]
-    qurl  = ",".join(codes)
-    url   = f"https://qt.gtimg.cn/q={qurl}"
-    req   = Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    result = {}
-    try:
-        with urlopen(req, timeout=10) as resp:
-            text = resp.read().decode("gbk", "ignore")
-        for line in text.strip().split("\n"):
-            parts = line.split("~")
-            if len(parts) < 10:
-                continue
-            raw_code = parts[2]
-            name_map = {"000300": "sh.000300", "399006": "sz.399006",
-                        "000016": "sh.000016", "000688": "sh.000688",
-                        "399330": "sz.399330", "000905": "sh.000905"}
-            bs_code  = name_map.get(raw_code, "")
-            close    = float(parts[3])
-            prev_cls = float(parts[4])
-            if bs_code:
-                result[bs_code] = {
-                    "close":     close,
-                    "prev_close": prev_cls,
-                    "today_chg": (close / prev_cls - 1) * 100,
-                    "date":      parts[30] if len(parts) > 30 else "",
-                    "time":      parts[33] if len(parts) > 33 else "",
-                }
-    except Exception as e:
-        print(f"[WARN] 腾讯接口也失败: {e}")
-    return result
-
-
-def fetch_history_sina(bs_code: str, days: int = 60) -> list:
-    """通过新浪历史K线接口获取日线收盘价"""
-    symbol_map = {
-        "sh.000300": "sh000300", "sz.399006": "sz399006",
-        "sh.000016": "sh000016", "sh.000688": "sh000688",
-        "sz.399330": "sz399330", "sh.000905": "sh000905",
-    }
-    symbol = symbol_map.get(bs_code, bs_code.replace(".", ""))
-    url    = (
-        f"https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/"
-        f"CN_MarketData.getKLineData?symbol={symbol}&scale=240&ma=5&datalen={days + 10}"
+def fetch_history_em(bs_code: str) -> list:
+    """
+    东方财富日K线接口，返回 [(date_str, close_float), ...]
+    与TongDaXin同源，保证20日动量计算基准一致。
+    K线字段：date,open,close,high,low,...
+    """
+    secid = EM_SECIDS.get(bs_code, "")
+    if not secid:
+        return []
+    # 取足够多的数据（提前2个月）
+    url = (
+        f"https://push2his.eastmoney.com/api/qt/stock/kline/get"
+        f"?secid={secid}&fields1=f1,f2,f3,f4,f5,f6"
+        f"&fields2=f51,f52,f53,f54,f55,f56"
+        f"&klt=101&fqt=1&beg=20260101&end=20991231"
+        f"&smplmt=460&lmt=1000000"
     )
-    req = Request(url, headers={"User-Agent": "Mozilla/5.0", "Referer": "https://finance.sina.com.cn"})
     try:
+        req = Request(url, headers={"User-Agent": "Mozilla/5.0", "Referer": "https://quote.eastmoney.com/"})
         with urlopen(req, timeout=10) as resp:
-            text = resp.read().decode("utf-8", "ignore")
-        data = json.loads(text)
-        return [(d["day"], float(d["close"])) for d in data if "close" in d]
+            data = json.loads(resp.read().decode("utf-8"))
+        klines = data.get("data", {}).get("klines", [])
+        # 解析：date,open,close,high,low,...
+        rows = []
+        for line in klines:
+            parts = line.split(",")
+            if len(parts) >= 4:
+                rows.append((parts[0], float(parts[2])))
+        return rows
     except Exception as e:
-        print(f"[WARN] 新浪历史K线失败 ({bs_code}): {e}")
+        print(f"[WARN] 东方财富K线失败 ({bs_code}): {e}")
         return []
 
 
-def get_historical_prices(bs_code: str) -> list:
-    """获取历史收盘价"""
-    rows = fetch_history_sina(bs_code)
-    if len(rows) >= LOOKBACK + 5:
-        return rows
-    print(f"[WARN] {bs_code} 历史数据不足")
-    return []
-
-
 def calc_momentum(hist: list, n: int = 20, realtime_close: float = None) -> float:
-    """计算N日动量（优先用实时价格）- 通达信算法"""
-    if len(hist) < n:
+    """
+    计算N日动量：实时价 / N交易日前收盘 - 1。
+    注意：TongDaXin "N日前" 指数从1开始（含今天为1），
+    故 Python 数组取 hist[-(n+1)]，即第 n+1 根K线（从后数）。
+    """
+    if len(hist) < n + 1 or realtime_close is None:
         return None
-    # 通达信用 hist[-n+1]，即从今天往前数 n-1 个交易日
-    earlier = hist[-(n - 1)][1]
+    # hist[-1]=今天, hist[-2]=昨天, ..., hist[-(n+1)]=n个交易日前（含今天算第1天）
+    earlier = hist[-(n + 1)][1]
     if earlier == 0:
         return None
-    today_price = realtime_close if realtime_close is not None else hist[-1][1]
-    return round((today_price / earlier - 1) * 100, 2)
+    return round((realtime_close / earlier - 1) * 100, 2)
 
 
 def emoji_for(ret: float) -> str:
@@ -236,7 +166,7 @@ def send_bark(title: str, body: str):
     server = BARK_SERVER.rstrip("/")
     key    = BARK_KEY
     if not key:
-        print("⚠️ BARK_KEY 未设置，跳过推送")
+        print("BARK_KEY 未设置，跳过推送")
         return
     encoded_title = quote(title, safe="")
     params = urlencode({
@@ -252,98 +182,65 @@ def send_bark(title: str, body: str):
             resp = r.read().decode()
         print(f"  Bark 响应: {resp[:100]}")
     except Exception as e:
-        print(f"  ⚠️ Bark 推送失败: {e}")
+        print(f"  Bark 推送失败: {e}")
 
 
 def main():
-    print(f"📊 指数动量信号推送  [{datetime.now().strftime('%Y-%m-%d %H:%M')}]")
+    print(f"指数动量信号推送  [{datetime.now().strftime('%Y-%m-%d %H:%M')}]")
     print("=" * 52)
-    
-    # 调试：打印环境变量
-    print(f"[DEBUG] BARK_KEY 设置: {'是' if BARK_KEY else '否'}")
-    print(f"[DEBUG] TZ: {os.environ.get('TZ', '未设置')}")
+    print(f"[DEBUG] BARK_KEY: {'已设置' if BARK_KEY else '未设置'}")
 
-    # 检查是否为本周最后一个交易日
-    print("[0/3] 检查今日是否为本周最后交易日...")
+    print("[0/3] 检查是否为本周最后交易日...")
     try:
         is_last = is_last_trading_day()
     except Exception as e:
-        print(f"[ERROR] is_last_trading_day() 异常: {e}")
-        # 如果检查失败，假设是周五继续执行
+        print(f"[ERROR] {e}，继续执行")
         is_last = True
     if not is_last:
-        print("⏭️ 今天不是本周最后交易日，跳过推送")
         sys.exit(0)
-    print("✅ 确认为本周最后交易日，继续执行...")
 
-    # Step 1: 获取实时价格
-    try:
-        realtime = fetch_realtime()
-    except Exception as e:
-        print(f"[ERROR] fetch_realtime() 异常: {e}")
-        realtime = {}
-    print(f"[1/3] 实时行情: {len(realtime)} 只成功")
+    realtime = fetch_realtime()
 
-    # Step 2: 获取历史数据 + 实时价格计算动量
-    print(f"[2/3] 获取历史数据 + 实时价格计算{LOOKBACK}日动量...")
+    print(f"[1/3] 实时: {len(realtime)} 只")
+    print(f"[2/3] 计算{LOOKBACK}日动量...")
+
     results = []
-    for sina_code, bs_code, name in INDICES:
-        try:
-            hist = get_historical_prices(bs_code)
-        except Exception as e:
-            print(f"[ERROR] get_historical_prices({bs_code}) 异常: {e}")
-            hist = []
-        
-        rt = realtime.get(bs_code, {})
-        realtime_close = rt.get("close", None)
-        today_chg = rt.get("today_chg", None)
-        
-        try:
-            mom = calc_momentum(hist, LOOKBACK, realtime_close)
-        except Exception as e:
-            print(f"[ERROR] calc_momentum 异常: {e}")
-            mom = None
+    for bs_code, name in INDICES:
+        hist = fetch_history_em(bs_code)
+        rt   = realtime.get(bs_code, {})
+        realtime_close = rt.get("close")
+        today_chg = rt.get("today_chg")
+        mom = calc_momentum(hist, LOOKBACK, realtime_close)
 
         if mom is not None:
             emoji = emoji_for(mom)
-            today_str = f"(今{today_chg:+.1f}%)" if today_chg is not None else ""
-            print(f"  {emoji} {name:<5} {mom:+.2f}% {today_str}")
-            results.append({
-                "name":       name,
-                "bs_code":    bs_code,
-                "momentum":   mom,
-                "today_chg":  today_chg,
-            })
+            chg_str = f"(今{today_chg:+.1f}%)" if today_chg is not None else ""
+            base_date = hist[-(LOOKBACK + 1)][0] if len(hist) >= LOOKBACK + 1 else "?"
+            print(f"  {emoji} {name:<5} {mom:+.2f}% {chg_str}  [基准={base_date}]")
+            results.append({"name": name, "momentum": mom, "today_chg": today_chg})
         else:
-            print(f"  ⚠️ {name} 数据不足，跳过")
+            print(f"  数据不足: {name}")
 
     if len(results) < 2:
-        print("❌ 有效数据不足，退出")
+        print("有效数据不足")
         sys.exit(1)
 
-    # 按20日动量降序
     results.sort(key=lambda x: x["momentum"], reverse=True)
 
-    # iOS 通知标题显示全部内容（20日动量已含今日盘中涨跌）
     title = "  ".join(
-        f"{'⭐' if i==0 else ''}{r['name']}{r['momentum']:+.1f}%"
+        f"{'★' if i==0 else ''}{r['name']}{r['momentum']:+.1f}%"
         for i, r in enumerate(results)
     )
-    body = ""
 
     print()
-    print(body)
-    print()
-
-    send_bark(title, body)
-    print("✅ 完成")
+    send_bark(title, "")
+    print("完成")
 
 
 if __name__ == "__main__":
     try:
         main()
     except Exception as e:
-        print(f"[FATAL] 脚本异常退出: {e}")
-        import traceback
-        traceback.print_exc()
+        print(f"FATAL: {e}")
+        import traceback; traceback.print_exc()
         sys.exit(2)
