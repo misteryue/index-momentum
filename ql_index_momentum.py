@@ -305,8 +305,8 @@ def main():
 
         if mom is not None:
             emoji = emoji_for(mom)
-            rt_info = f"  实时{today_chg:+.2f}%" if today_chg is not None else ""
-            print(f"  {emoji} {name:<5} {LOOKBACK}日: {mom:+.2f}%{rt_info}")
+            today_str = f"(今{today_chg:+.1f}%)" if today_chg is not None else ""
+            print(f"  {emoji} {name:<5} {mom:+.2f}% {today_str}")
             results.append({
                 "name":       name,
                 "bs_code":    bs_code,
@@ -323,7 +323,7 @@ def main():
     # 按20日动量降序
     results.sort(key=lambda x: x["momentum"], reverse=True)
 
-    # iOS 通知标题显示全部内容
+    # iOS 通知标题显示全部内容（20日动量已含今日盘中涨跌）
     title = "  ".join(
         f"{'⭐' if i==0 else ''}{r['name']}{r['momentum']:+.1f}%"
         for i, r in enumerate(results)
