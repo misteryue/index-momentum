@@ -43,8 +43,16 @@ def is_last_trading_day() -> bool:
     检查今天是否为本周最后一个交易日。
     原理：检查今天是否为交易日 + 未来几天是否还有交易日。
     """
-    today = datetime.now()
+    # GitHub Actions 使用 UTC，需要转换为北京时间
+    import os
+    tz_env = os.environ.get("TZ", "")
+    if "Asia/Shanghai" not in tz_env and "PRC" not in tz_env:
+        # 如果没有设置时区，假设需要 +8 小时
+        today = datetime.now() + timedelta(hours=8)
+    else:
+        today = datetime.now()
     weekday = today.weekday()  # 0=周一, 6=周日
+    print(f"[DEBUG] 当前北京时间: {today.strftime('%Y-%m-%d %H:%M')} 周{['一','二','三','四','五','六','日'][weekday]}")
     
     # 尝试获取-market数据判断是否为交易日
     # 简单方法：检查今天是否有实时行情（市场开盘）
@@ -72,6 +80,7 @@ def is_last_trading_day() -> bool:
         # 如果API失败，工作日假设为交易日
         if weekday >= 5:  # 周末
             return False
+
     # 检查今天之后的几天内是否还有交易日（到周日为止）
     # 简化：周五必然是最后交易日（除非节假日）
     # 如果API返回了有效价格，说明市场开市
