@@ -1,0 +1,18 @@
+name: 指数动量推送
+
+on:
+  schedule:
+    - cron: '45 6 * * 1-5'
+  workflow_dispatch:
+
+jobs:
+  push:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - env:
+          BARK_KEY: ${{ secrets.BARK_KEY }}
+        run: python ql_index_momentum.py
