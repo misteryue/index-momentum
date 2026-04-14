@@ -52,8 +52,8 @@ def fetch_kline(bs_code, retries=3):
     secid = EM_SECIDS.get(bs_code)
     if not secid:
         return []
-    url = f"https://push2his.eastmoney.com/api/qt/stock/kline/get?secid={secid}&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56&klt=101&fqt=1&beg=20260101&end=20991231&smpllt=460&lmt=1000000"
-    for i in range(retries):
+    url = f"https://push2his.eastmoney.com/api/qt/stock/kline/get?secid={secid}&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56&klt=101&fqt=1&beg=20260101&end=20991231&smplmt=460&lmt=1000000"
+    for i in range(retries + 2):
         try:
             req = Request(url, headers={"User-Agent": "Mozilla/5.0", "Referer": "https://quote.eastmoney.com/"})
             with urlopen(req, timeout=15) as resp:
