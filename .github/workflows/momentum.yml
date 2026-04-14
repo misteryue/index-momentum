@@ -2,7 +2,7 @@ name: 指数动量推送
 
 on:
   schedule:
-    - cron: '45 6 * * 1-5'
+    - cron: '45 6 * * 1-5'  # 北京时间14:45
   workflow_dispatch:
 
 jobs:
@@ -15,6 +15,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - env:
+      - run: python ql_index_momentum.py
+        env:
           BARK_KEY: ${{ secrets.BARK_KEY }}
-        run: python ql_index_momentum.py
